@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Rive Game Player</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/@rive-app/canvas"></script>
+    <style>
+        body, html { 
+            margin: 0; 
+            padding: 0; 
+            height: 100%; 
+            overflow: hidden; 
+            background-color: #0f172a; /* Tailwind slate-900 */
+            color: white; 
+            font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+        }
+        #canvas-container { 
+            width: 100%; 
+            height: 100%; 
+            display: flex; 
+            flex-direction: column;
+            position: relative;
+        }
+        canvas { 
+            flex-grow: 1;
+            width: 100%; 
+            height: 100%; 
+            object-fit: contain; 
+            cursor: crosshair;
+        }
+        #start-overlay {
+            backdrop-filter: blur(5px);
+        }
+    </style>
+</head>
+<body>
+    <div id="canvas-container">
+        <!-- Main Game Canvas -->
+        <canvas id="rive-canvas"></canvas>
+        
+        <!-- Start Game Overlay for Gyro Permissions -->
+        <div id="start-overlay" class="absolute inset-0 z-50 flex flex-col items-center justify-center bg-slate-900/80">
+            <h1 class="text-3xl font-bold mb-4 text-white">Ready to Play?</h1>
+            <p class="text-slate-300 mb-8 max-w-sm text-center">Tilt your phone to control the game. We need permission to access your device's motion sensors.</p>
+            <button id="start-btn" class="bg-blue-600 hover:bg-blue-500 text-white font-bold py-3 px-8 rounded-full shadow-lg transform transition active:scale-95 text-lg">
+                Start Game
+            </button>
+        </div>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('rive-canvas');
+        const startOverlay = document.getElementById('start-overlay');
+        const startBtn = document.getElementById('start-btn');
+        
+        let riveInstance = null;
+        let gyroXInput = null;
+        let gyroYInput = null;
+
+        function initRive(srcOrBuffer) {
+            // Clean up existing instance if any
+            if (riveInstance) {
+                riveInstance.cleanup();
+            }
+
+            gyroXInput = null;
+            gyroYInput = null;
+
+            const riveConfig = {
+                canvas: canvas,
+                autoplay: true,
+                stateMachines: 'State Machine 1', // Based on the snippet data
+                onLoad: () => {
+                    riveInstance.resizeDrawingSurfaceToCanvas();
+                    extractInputs();
+                },
+                onLoadError: () => {
+                    console.error("Failed to load Rive file.");
+                }
+            };
+
+            if (srcOrBuffer instanceof ArrayBuffer) {
+                riveConfig.buffer = srcOrBuffer;
+            } else {
+                riveConfig.src = srcOrBuffer;
+            }
+
+            riveInstance = new rive.Rive(riveConfig);
+        }
+
+        function extractInputs() {
+            // Fetch inputs dynamically from the file's state machine
+            const inputs = riveInstance.stateMachineInputs('State Machine 1');
+            if (!inputs) return;
+
+            inputs.forEach(input => {
+                // Cache Gyro inputs for tracking
+                if (input.name === 'Gyro X') gyroXInput = input;
+                if (input.name === 'Gyro Y') gyroYInput = input;
+            });
+        }
+
+        // Start Overlay & Gyro Permission Logic
+        startBtn.addEventListener('click', async () => {
+            // Request orientation permissions (Required by iOS 13+)
+            if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
+                try {
+                    const permission = await DeviceOrientationEvent.requestPermission();
+                    if (permission === 'granted') {
+                        window.addEventListener('deviceorientation', handleOrientation);
+                    } else {
+                        alert("Gyroscope permission denied. Falling back to touch/mouse.");
+                    }
+                } catch (e) {
+                    console.error(e);
+                }
+            } else {
+                // Non-iOS 13+ devices
+                window.addEventListener('deviceorientation', handleOrientation);
+            }
+            
+            startOverlay.classList.add('hidden');
+        });
+
+        function handleOrientation(event) {
+            if (!riveInstance) return;
+
+            // Gamma is rotation around y-axis (left/right tilt)
+            let gamma = event.gamma || 0; 
+            // Beta is rotation around x-axis (front/back tilt)
+            let beta = event.beta || 0;
+
+            // Map -90 to 90 degrees to -100 to 100 Rive input
+            let mappedX = (gamma / 90) * 100;
+            let mappedY = (beta / 90) * 100; 
+
+            // Clamp values strictly between -100 and 100
+            mappedX = Math.max(-100, Math.min(100, mappedX));
+            mappedY = Math.max(-100, Math.min(100, mappedY));
+
+            if (gyroXInput) gyroXInput.value = mappedX;
+            if (gyroYInput) gyroYInput.value = mappedY;
+        }
+
+        // Keep canvas responsive
+        window.addEventListener('resize', () => {
+            if (riveInstance) {
+                riveInstance.resizeDrawingSurfaceToCanvas();
+            }
+        });
+
+        // Mouse tracking to simulate device Gyroscope (Game feel fallback!)
+        canvas.addEventListener('mousemove', (e) => {
+            if (!riveInstance || !startOverlay.classList.contains('hidden')) return;
+            
+            const rect = canvas.getBoundingClientRect();
+            const x = e.clientX - rect.left;
+            const y = e.clientY - rect.top;
+            
+            // Map mouse position to -100 to 100 range
+            const mappedX = ((x / rect.width) * 200) - 100;
+            const mappedY = ((y / rect.height) * 200) - 100;
+
+            if (gyroXInput) {
+                gyroXInput.value = mappedX;
+            }
+            if (gyroYInput) {
+                // Inverting Y because screen space Y is down, but gyro Y is usually up
+                gyroYInput.value = -mappedY; 
+            }
+        });
+
+        // Attempt to automatically load the game file from GitHub
+        async function loadDefaultGame() {
+            try {
+                // Using raw.githubusercontent.com to get the actual file data instead of the GitHub UI page
+                const response = await fetch('https://raw.githubusercontent.com/elvinrodrigues-bot/Meme_game/main/yer_game_test_09.riv');
+                if (!response.ok) throw new Error('Failed to fetch the default file.');
+                const buffer = await response.arrayBuffer();
+                initRive(buffer);
+            } catch (error) {
+                console.error("Could not load the Rive file.", error);
+            }
+        }
+
+        loadDefaultGame();
+    </script>
+</body>
+</html>
